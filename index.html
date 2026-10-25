@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FMS-209 Temperature Monitor</title>
+<style>
+  body{font-family:Arial,sans-serif;margin:0;padding:16px;background:#f4f6f8;color:#222}
+  h1{font-size:1.3rem;margin:0 0 4px} .sub{color:#666;font-size:.85rem;margin-bottom:16px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:16px}
+  .card{background:#fff;border-radius:10px;padding:12px;text-align:center;box-shadow:0 1px 3px #0002}
+  .card .n{font-size:.8rem;color:#666;text-transform:uppercase} .card .v{font-size:1.7rem;font-weight:bold}
+  .box{background:#fff;border-radius:10px;padding:12px;margin-bottom:16px;box-shadow:0 1px 3px #0002;overflow-x:auto}
+  table{width:100%;border-collapse:collapse;font-size:.85rem} th,td{padding:6px;border-bottom:1px solid #eee;text-align:center}
+  button{padding:8px 14px;border:0;border-radius:6px;background:#1a73e8;color:#fff;cursor:pointer}
+  #status{font-size:.8rem;color:#888}
+</style>
+</head>
+<body>
+<h1>FMS-209 Furnace Temperature Monitor</h1>
+<div class="sub">Live data from ESP32 + 5 × DS18B20 <span id="status">connecting...</span></div>
+
+<div class="cards" id="cards"></div>
+<div class="box"><canvas id="chart" height="110"></canvas></div>
+
+<div class="box"><b>Summary (last 200 readings)</b>
+  <table><thead><tr><th>Location</th><th>Min °C</th><th>Max °C</th><th>Average °C</th></tr></thead>
+  <tbody id="summary"></tbody></table></div>
+
+<div class="box"><b>Latest readings</b>
+  <table><thead><tr><th>Time</th><th>Left</th><th>Centre</th><th>Right</th><th>Middle</th><th>Bottom</th></tr></thead>
+  <tbody id="latest"></tbody></table><br>
+  <button onclick="downloadCSV()">Download CSV</button></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+// ====== PUT YOUR FIREBASE DATABASE URL HERE (no slash at the end) ======
+const DB_URL = "https://fms209-monitor-default-rtdb.asia-southeast1.firebasedatabase.app";
+
+const KEYS   = ["left","centre","right","middle","bottom"];
+const COLORS = ["#e53935","#1e88e5","#43a047","#fb8c00","#8e24aa"];
+let rows = [];
+
+document.getElementById("cards").innerHTML = KEYS.map((k,i) =>
+  `<div class="card"><div class="n">${k}</div><div class="v" id="v-${k}" style="color:${COLORS[i]}">--</div></div>`).join("");
+
+const chart = new Chart(document.getElementById("chart"), {
+  type: "line",
+  data: { labels: [], datasets: KEYS.map((k,i) => ({label:k, data:[], borderColor:COLORS[i], tension:.3, pointRadius:0})) },
+  options: { animation:false, scales:{ y:{title:{display:true,text:"Temperature (°C)"}} } }
+});
+
+async function load() {
+  try {
+    const res = await fetch(`${DB_URL}/readings.json?orderBy=%22%24key%22&limitToLast=200`);
+    const data = await res.json();
+    rows = Object.values(data || {}).sort((a,b) => a.ts - b.ts);
+    draw();
+    document.getElementById("status").textContent = "· updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    document.getElementById("status").textContent = "· cannot reach database";
+  }
+}
+
+function draw() {
+  if (!rows.length) return;
+  const last = rows[rows.length-1];
+  KEYS.forEach(k => document.getElementById("v-"+k).textContent = last[k].toFixed(1) + "°");
+
+  chart.data.labels = rows.map(r => new Date(r.ts).toLocaleTimeString());
+  chart.data.datasets.forEach((d,i) => d.data = rows.map(r => r[KEYS[i]]));
+  chart.update();
+
+  document.getElementById("summary").innerHTML = KEYS.map(k => {
+    const v = rows.map(r => r[k]);
+    const avg = v.reduce((a,b)=>a+b,0)/v.length;
+    return `<tr><td>${k}</td><td>${Math.min(...v).toFixed(1)}</td><td>${Math.max(...v).toFixed(1)}</td><td>${avg.toFixed(1)}</td></tr>`;
+  }).join("");
+
+  document.getElementById("latest").innerHTML = rows.slice(-10).reverse().map(r =>
+    `<tr><td>${new Date(r.ts).toLocaleTimeString()}</td>${KEYS.map(k=>`<td>${r[k].toFixed(1)}</td>`).join("")}</tr>`).join("");
+}
+
+function downloadCSV() {
+  const csv = "time,left,centre,right,middle,bottom\n" +
+    rows.map(r => [new Date(r.ts).toISOString(), ...KEYS.map(k=>r[k])].join(",")).join("\n");
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([csv], {type:"text/csv"}));
+  a.download = "fms209_temperature.csv";
+  a.click();
+}
+
+load();
+setInterval(load, 10000);   // refresh every 10 seconds
+</script>
+</body>
+</html>
